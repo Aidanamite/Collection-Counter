@@ -9,22 +9,21 @@ using Steamworks;
 using UnityEngine.UI;
 using RaftModLoader;
 using HMLLibrary;
+using System;
 
 public class CollectionCounter : Mod
 {
+    static Dictionary<int, Item_Base> itemLookup = new Dictionary<int, Item_Base>();
+    public static Item_Base LookupItem(int index)
+    {
+        if (!itemLookup.TryGetValue(index, out var item) || !item)
+            item = itemLookup[index] = ItemManager.GetItemByIndex(index);
+        return item;
+    }
     static Dictionary<Item_Base, int> items = new Dictionary<Item_Base, int>();
     static Dictionary<ulong, Dictionary<Item_Base, int>> playerItems = new Dictionary<ulong, Dictionary<Item_Base, int>>();
     static Dictionary<Item_Base, int> changes = new Dictionary<Item_Base, int>();
-    static CanvasHelper _can = null;
-    public static CanvasHelper canvas
-    {
-        get
-        {
-            if (_can == null)
-                _can = ComponentManager<CanvasHelper>.Value;
-            return _can;
-        }
-    }
+    public static CanvasHelper canvas => ComponentManager<CanvasHelper>.Value;
     public static RectTransform imageContainer;
     static Text display;
     static Text display2;
@@ -33,13 +32,15 @@ public class CollectionCounter : Mod
     static string showStats;
     static bool showing;
     Harmony harmony;
+    public static CollectionCounter instance;
     public void Start()
     {
+        instance = this;
         harmony = new Harmony("com.aidanamite.CollectionCounter");
         harmony.PatchAll();
         SceneManager.sceneLoaded += (x, y) =>
         {
-            if (x.name == global::Raft_Network.MenuSceneName)
+            if (x.name == Raft_Network.MenuSceneName)
             {
                 items.Clear();
                 playerItems.Clear();
@@ -51,7 +52,7 @@ public class CollectionCounter : Mod
     public override void WorldEvent_WorldLoaded()
     {
         CreateUI();
-        if (global::Raft_Network.IsHost)
+        if (Raft_Network.IsHost)
         {
             System.Func<string, Dictionary<Item_Base, int>> getItems = (x) =>
             {
@@ -74,13 +75,13 @@ public class CollectionCounter : Mod
         }
     }
 
-    public override void WorldEvent_OnPlayerConnected(CSteamID steamid, RGD_Settings_Character characterSettings)
+    public override void WorldEvent_OnPlayerConnected(Network_UserId userid, RGD_Settings_Character characterSettings)
     {
-        if (global::Raft_Network.IsHost && ComponentManager<global::Raft_Network>.Value.HostID != steamid)
+        if (Raft_Network.IsHost && ComponentManager<Raft_Network>.Value.HostID != userid)
         {
-            new Message_ChangeItems(items, Message_ChangeItems.Type.World).Message.Send(steamid);
-            if (playerItems.ContainsKey(steamid.m_SteamID))
-                new Message_ChangeItems(playerItems[steamid.m_SteamID], Message_ChangeItems.Type.Host).Message.Send(steamid);
+            new Message_ChangeItems(items, Message_ChangeItems.Type.World).Send(userid);
+            if (playerItems.ContainsKey(userid))
+                new Message_ChangeItems(playerItems[userid], Message_ChangeItems.Type.Host).Send(userid);
         }
     }
 
@@ -94,46 +95,47 @@ public class CollectionCounter : Mod
         Log("Mod has been unloaded!");
     }
 
-    void Update()
+    public override bool OnNetworkMessage(object message, Network_UserId from, string modslug)
     {
-        bool flag = false;
-        if (changes.Count != 0)
+        if (message is Message_ChangeItems change)
         {
-            if (global::Raft_Network.IsHost)
-                new Message_ChangeItems(changes, Message_ChangeItems.Type.World).Message.Broadcast();
-            else
-                new Message_ChangeItems(changes, Message_ChangeItems.Type.World | Message_ChangeItems.Type.Player).Message.Send(ComponentManager<global::Raft_Network>.Value.HostID);
-            changes.Clear();
-            flag = true;
-        }
-        var message = RAPI.ListenForNetworkMessagesOnChannel(MessageType.ChannelID);
-        while (message != null && message.message != null && message.message is Message_InitiateConnection && message.message.Type == MessageType.MessageID)
-        {
-            var msg = (Message_InitiateConnection)message.message;
-            if (msg.appBuildID == MessageType.ChangeItems)
-            {
-                var change = new Message_ChangeItems(msg);
-                if (change.Player) {
-                    if (!playerItems.ContainsKey(message.steamid.m_SteamID))
-                        playerItems.Add(message.steamid.m_SteamID, new Dictionary<Item_Base, int>(change.items));
+                if (change.Player)
+                {
+                    if (!playerItems.ContainsKey(from))
+                        playerItems.Add(from, new Dictionary<Item_Base, int>(change.items));
                     else
-                        playerItems[message.steamid.m_SteamID].Add(change.items);
+                        playerItems[from].Add(change.items);
                 }
                 if (change.World)
                     items.Add(change.items);
                 if (change.Host)
                 {
-                    if (!playerItems.ContainsKey(ComponentManager<global::Raft_Network>.Value.LocalSteamID.m_SteamID))
-                        playerItems.Add(ComponentManager<global::Raft_Network>.Value.LocalSteamID.m_SteamID, new Dictionary<Item_Base, int>(change.items));
+                    if (!playerItems.ContainsKey(ComponentManager<Raft_Network>.Value.LocalSteamID))
+                        playerItems.Add(ComponentManager<Raft_Network>.Value.LocalSteamID, new Dictionary<Item_Base, int>(change.items));
                     else
-                        playerItems[ComponentManager<global::Raft_Network>.Value.LocalSteamID.m_SteamID].Add(change.items);
+                        playerItems[ComponentManager<Raft_Network>.Value.LocalSteamID].Add(change.items);
                 }
-                flag = true;
-            }
-            message = RAPI.ListenForNetworkMessagesOnChannel(MessageType.ChannelID);
+                dataDirty = true;
         }
-        if (global::Raft_Network.IsHost && flag)
+        return base.OnNetworkMessage(message, from, modslug);
+    }
+
+    bool dataDirty = false;
+    void Update()
+    {
+        dataDirty = false;
+        if (changes.Count != 0)
         {
+            if (Raft_Network.IsHost)
+                new Message_ChangeItems(changes, Message_ChangeItems.Type.World).Broadcast();
+            else
+                new Message_ChangeItems(changes, Message_ChangeItems.Type.World | Message_ChangeItems.Type.Player).Send(ComponentManager<Raft_Network>.Value.HostID);
+            changes.Clear();
+            dataDirty = true;
+        }
+        if (Raft_Network.IsHost && dataDirty)
+        {
+            dataDirty = false;
             System.Action<string, Dictionary<Item_Base, int>> putItems = (x,y) =>
             {
                 var i = 0;
@@ -155,7 +157,7 @@ public class CollectionCounter : Mod
             }
             ExtraSettingsAPI_SetDataValue("collected", "player_count", j.ToString());
         }
-        if (ExtraSettingsAPI_Loaded && SceneManager.GetActiveScene().name == global::Raft_Network.GameSceneName)
+        if (ExtraSettingsAPI_Loaded && RAPI.IsCurrentSceneGame())
         {
             if (CanvasHelper.ActiveMenu == MenuType.None)
             {
@@ -181,8 +183,8 @@ public class CollectionCounter : Mod
                     s += "\n - " + p.Key.settings_Inventory.DisplayName + " x " + p.Value;
                 display.text = s;
                 s = "Personal:";
-                if (playerItems.ContainsKey(ComponentManager<global::Raft_Network>.Value.LocalSteamID.m_SteamID))
-                    foreach (var p in playerItems[ComponentManager<global::Raft_Network>.Value.LocalSteamID.m_SteamID])
+                if (playerItems.ContainsKey(ComponentManager<Raft_Network>.Value.LocalSteamID))
+                    foreach (var p in playerItems[ComponentManager<Raft_Network>.Value.LocalSteamID])
                         s += "\n - " + p.Key.settings_Inventory.DisplayName + " x " + p.Value;
                 display2.text = s;
                 var header = imageContainer.Find("Header").GetComponent<Text>();
@@ -210,8 +212,8 @@ public class CollectionCounter : Mod
                 foreach (var p in items)
                     t += p.Value;
                 var pt = 0;
-                if (playerItems.ContainsKey(ComponentManager<global::Raft_Network>.Value.LocalSteamID.m_SteamID))
-                    foreach (var p in playerItems[ComponentManager<global::Raft_Network>.Value.LocalSteamID.m_SteamID])
+                if (playerItems.ContainsKey(ComponentManager<Raft_Network>.Value.LocalSteamID))
+                    foreach (var p in playerItems[ComponentManager<Raft_Network>.Value.LocalSteamID])
                         pt += p.Value;
                 hud.text = $"Global Total: {t}\nPersonal Total: {pt}";
                 hud.rectTransform.offsetMax = new Vector2(hud.preferredWidth + canvas.dropText.fontSize, 0);
@@ -290,7 +292,7 @@ public class CollectionCounter : Mod
         holdToShow = ExtraSettingsAPI_GetCheckboxState("holdToShow");
         try
         {
-            if (SceneManager.GetActiveScene().name == global::Raft_Network.GameSceneName)
+            if (SceneManager.GetActiveScene().name == Raft_Network.GameSceneName)
                 WorldEvent_WorldLoaded();
         } catch (System.Exception e)
         {
@@ -345,10 +347,10 @@ public class CollectionCounter : Mod
         {
             changes.AddTo(item, count);
             items.AddTo(item, count);
-            if (playerItems.ContainsKey(ComponentManager<global::Raft_Network>.Value.LocalSteamID.m_SteamID))
-                playerItems[ComponentManager<global::Raft_Network>.Value.LocalSteamID.m_SteamID].AddTo(item, count);
+            if (playerItems.ContainsKey(ComponentManager<Raft_Network>.Value.LocalSteamID))
+                playerItems[ComponentManager<Raft_Network>.Value.LocalSteamID].AddTo(item, count);
             else
-                playerItems.Add(ComponentManager<global::Raft_Network>.Value.LocalSteamID.m_SteamID,new Dictionary<Item_Base, int> { [item] = count });
+                playerItems.Add(ComponentManager<Raft_Network>.Value.LocalSteamID,new Dictionary<Item_Base, int> { [item] = count });
         }
     }
 }
@@ -424,8 +426,8 @@ static class ExtentionMethods
         return data;
     }
 
-    public static void Broadcast(this Message message, NetworkChannel channel = MessageType.Channel) => ComponentManager<global::Raft_Network>.Value.RPC(message, Target.Other, EP2PSend.k_EP2PSendReliable, channel);
-    public static void Send(this Message message, CSteamID steamID, NetworkChannel channel = MessageType.Channel) => ComponentManager<global::Raft_Network>.Value.SendP2P(steamID, message, EP2PSend.k_EP2PSendReliable, channel);
+    public static void Broadcast(this Message message, NetworkChannel channel = NetworkChannel.Channel_Game) => ComponentManager<Raft_Network>.Value.RPC(message, Target.Other, EP2PSend.k_EP2PSendReliable, channel);
+    public static void Send(this Message message, Network_UserId userID, NetworkChannel channel = NetworkChannel.Channel_Game) => ComponentManager<Raft_Network>.Value.SendP2P(userID, message, EP2PSend.k_EP2PSendReliable, channel);
 }
 
 [HarmonyPatch(typeof(Inventory), "AddItem")]
@@ -461,56 +463,24 @@ class Patch_PickupItem
     static void Postfix() => pickingUp = null;
 }
 
-static class MessageType
-{
-    public const Messages MessageID = (Messages)4660;
-    public const int ChannelID = 431136;
-    public const NetworkChannel Channel = (NetworkChannel)ChannelID;
-    public const int ChangeItems = 0;
-}
-
+[Serializable]
 class Message_ChangeItems
 {
-    public Message_InitiateConnection Message {
-        get {
-            var data = new List<byte>();
-            data.Add((byte)worldData);
-            data.AddRange(items.Count.Bytes());
-            foreach (var p in items) {
-                data.AddRange(p.Key.UniqueName.Length.Bytes());
-                data.AddRange(p.Key.UniqueName.Bytes());
-                data.AddRange(p.Value.Bytes());
-            }
-            return new Message_InitiateConnection(MessageType.MessageID, MessageType.ChangeItems, data.String());
-        }
-    }
-    public Dictionary<Item_Base, int> items;
+    Dictionary<int, int> _items;
+    public Dictionary<Item_Base, int> items => _items.ToDictionary(x => CollectionCounter.LookupItem(x.Key), x => x.Value);
     Type worldData;
     public bool World => (worldData & Type.World) != 0;
     public bool Player => (worldData & Type.Player) != 0;
     public bool Host => (worldData & Type.Host) != 0;
     public Message_ChangeItems(Dictionary<Item_Base, int> Items, Type type)
     {
-        items = new Dictionary<Item_Base, int>(Items);
+        _items = Items.ToDictionary(x => x.Key.UniqueIndex,x => x.Value);
         worldData = type;
     }
-    public Message_ChangeItems(Message_InitiateConnection message)
-    {
-        items = new Dictionary<Item_Base, int>();
-        var data = message.password.Bytes();
-        worldData = (Type)data[0];
-        var c = data.Integer(1);
-        var p = 5;
-        while (c > 0)
-        {
-            var l = data.Integer(p);
-            var n = ItemManager.GetItemByName(data.String(l, p + 4));
-            if (n)
-                items.Add(n, data.Integer(p + 4 + l * 2));
-            p += l * 2 + 8;
-            c--;
-        }
-    }
+
+    public void Send(Network_UserId userid) => CollectionCounter.instance.SendNetworkMessageToPlayer(this, userid);
+    public void Broadcast() => CollectionCounter.instance.SendNetworkMessage(this);
+
     public enum Type : byte
     {
         None = 0,

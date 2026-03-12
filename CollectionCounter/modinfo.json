@@ -1,8 +1,9 @@
 {
   "name": "Collection Counter",
+  "slug": "collection-counter",
   "author": "Aidanamite",
   "description": "Counts the items collected from the ocean",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "license": "GNU AGPLv3",
   "icon": "icon.png",
   "banner": "banner.jpg",
